@@ -4,33 +4,33 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.graphics.Color
 
-// Atmospheric Command Palette (Dark Mode)
-val NavyAbyss = Color(0xFF060E1A)
-val NavySurface = Color(0xFF0D1B2E)
-val NavyElevated = Color(0xFF152740)
-val NavyCardBorder = Color(0xFF203A5E)
+// Facebook-Inspired Dark Mode Palette (Clean, High-Contrast Dark Surfaces)
+val NavyAbyss = Color(0xFF18191A)       // Facebook Dark Feed Background
+val NavySurface = Color(0xFF242526)     // Facebook Dark Card Surface
+val NavyElevated = Color(0xFF3A3B3C)    // Facebook Dark Pill / Inner Card Surface
+val NavyCardBorder = Color(0xFF3E4042)  // Subtle Dark Divider / Border
 
-// Daylight Meteorological Palette (Light Mode)
-val LightSkyBackground = Color(0xFFF2F7FC)
-val LightCardSurface = Color(0xFFFFFFFF)
-val LightElevatedSurface = Color(0xFFE6F0FA)
-val LightCardBorder = Color(0xFFC5D8EC)
+// Facebook-Inspired Light Mode Palette (Clean #F0F2F5 Feed & Crisp White Cards)
+val LightSkyBackground = Color(0xFFF0F2F5) // Facebook Light Feed Background
+val LightCardSurface = Color(0xFFFFFFFF)   // Crisp White Card Surface
+val LightElevatedSurface = Color(0xFFF7F8FA) // Subtle Gray Inner Tile Surface
+val LightCardBorder = Color(0xFFDADDE1)    // Clean Facebook Card Border / Divider
 
-// Primary Accents (High-contrast across Dark and Light themes)
-val RadarCyan = Color(0xFF00B8D4)
+// Primary Accents (Facebook Blue & Teal across Light and Dark themes)
+val RadarCyan = Color(0xFF1877F2)
 val MonsoonTeal = Color(0xFF00897B)
 
 // Alert & Hydrology Status Colors
-val AlertRed = Color(0xFFE53935)
+val AlertRed = Color(0xFFE41E3F)
 val WarningAmber = Color(0xFFF57C00)
-val AdvisoryYellow = Color(0xFFFBC02D)
-val SafeEmerald = Color(0xFF00A859)
+val AdvisoryYellow = Color(0xFFD99B00)
+val SafeEmerald = Color(0xFF2E7D32)
 
 // Typography & Neutral Tones
-val CloudWhite = Color(0xFFF4F8FC)
-val MistSilver = Color(0xFF9AB0C7)
-val SlateMuted = Color(0xFF5C7490)
-val DeepInk = Color(0xFF0A192F)
+val CloudWhite = Color(0xFFE4E6EB)
+val MistSilver = Color(0xFFB0B3B8)
+val SlateMuted = Color(0xFF65676B)
+val DeepInk = Color(0xFF050505)
 
 // Theme-aware adaptive color accessors for screens and components
 val AdaptiveAppBackground: Color
@@ -66,9 +66,9 @@ val AdaptiveSecondaryText: Color
 val AdaptiveCyanAccent: Color
     @Composable
     @ReadOnlyComposable
-    get() = if (LocalIsDarkTheme.current) Color(0xFF00E5FF) else Color(0xFF007799)
+    get() = if (LocalIsDarkTheme.current) Color(0xFF4599FF) else Color(0xFF1877F2)
 
 val AdaptiveTealAccent: Color
     @Composable
     @ReadOnlyComposable
-    get() = if (LocalIsDarkTheme.current) Color(0xFF1DE9B6) else Color(0xFF00695C)
+    get() = if (LocalIsDarkTheme.current) Color(0xFF2ABBA7) else Color(0xFF00796B)

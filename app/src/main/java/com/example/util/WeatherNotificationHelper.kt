@@ -28,6 +28,11 @@ import kotlin.math.roundToInt
 
 object WeatherNotificationHelper {
 
+    const val EXTRA_FROM_NOTIFICATION = "extra_from_notification"
+    const val EXTRA_NOTIFICATION_REGION_ID = "extra_notification_region_id"
+    const val EXTRA_NOTIFICATION_CITY = "extra_notification_city"
+    const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
+
     private const val CHANNEL_ID = "lanka_weather_alerts_v2"
     private const val CHANNEL_NAME = "Sri Lanka Live Weather, Forecast & Gov Alerts"
     private var notificationSequence = 2000
@@ -135,7 +140,27 @@ object WeatherNotificationHelper {
             govReferenceCode = govRef
         )
 
-        // Post to Android Mobile Notification Hub if permission is granted (or on API < 33)
+        postRecordToDeviceNotifications(
+            context = context,
+            record = record,
+            regionId = region.id
+        )
+
+        return record
+    }
+
+    /**
+     * Posts (or re-posts when selected by the user) a generated notification record directly to the
+     * Android device notification shade. Clicking the notification in the system drawer automatically
+     * navigates back to MainActivity and focuses the selected location.
+     */
+    fun postRecordToDeviceNotifications(
+        context: Context,
+        record: DispatchedNotificationRecord,
+        regionId: String = record.district.lowercase(Locale.US).replace(" ", "_")
+    ): Boolean {
+        createNotificationChannel(context)
+
         val canPost = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(
                 context,
@@ -145,61 +170,76 @@ object WeatherNotificationHelper {
             true
         }
 
-        if (canPost) {
-            try {
-                val tapIntent = Intent(context, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                }
-                val pendingIntent = PendingIntent.getActivity(
-                    context,
-                    region.id.hashCode(),
-                    tapIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
+        if (!canPost) return false
 
-                val govWebIntent = Intent(Intent.ACTION_VIEW, Uri.parse(govPortalUrl)).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                val govPendingIntent = PendingIntent.getActivity(
-                    context,
-                    (region.id + "_gov").hashCode(),
-                    govWebIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-
-                val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-                    .setSmallIcon(R.drawable.ic_launcher_foreground)
-                    .setSubText("${intervalOption.label} • Temp $tempStr • Precip $precipRateStr")
-                    .setContentTitle(title)
-                    .setContentText("Now: ${report.weatherDescription} ($tempStr, $precipRateStr) | Gov: $govHeadline")
-                    .setStyle(
-                        NotificationCompat.BigTextStyle()
-                            .setBigContentTitle(title)
-                            .bigText(body)
-                            .setSummaryText("Gov Ref: $govRef • Auto-Alert ${intervalOption.label}")
-                    )
-                    .addAction(
-                        android.R.drawable.ic_menu_view,
-                        "Official Gov News",
-                        govPendingIntent
-                    )
-                    .setPriority(NotificationCompat.PRIORITY_HIGH)
-                    .setDefaults(NotificationCompat.DEFAULT_ALL)
-                    .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
-                    .setAutoCancel(true)
-                    .setContentIntent(pendingIntent)
-                    .build()
-
-                notificationSequence = (notificationSequence + 1) % 9000 + 1000
-                NotificationManagerCompat.from(context)
-                    .notify(notificationSequence, notification)
-            } catch (_: SecurityException) {
-                // Handled gracefully via in-app notification banner
-            } catch (_: Exception) {
-                // Ignore in headless unit test environments
+        return try {
+            val tapIntent = Intent(context, MainActivity::class.java).apply {
+                action = Intent.ACTION_MAIN
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(EXTRA_FROM_NOTIFICATION, true)
+                putExtra(EXTRA_NOTIFICATION_REGION_ID, regionId)
+                putExtra(EXTRA_NOTIFICATION_CITY, record.nearestCity)
+                putExtra(EXTRA_NOTIFICATION_ID, record.id)
             }
-        }
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                record.id.hashCode(),
+                tapIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
 
-        return record
+            val govWebIntent = Intent(Intent.ACTION_VIEW, Uri.parse(record.officialPortalUrl)).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            val govPendingIntent = PendingIntent.getActivity(
+                context,
+                (record.id + "_gov").hashCode(),
+                govWebIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val tempStr = String.format(Locale.US, "%.1f°C", record.temperatureC)
+            val precipRateStr = String.format(Locale.US, "%.1f mm/h", record.hourlyPrecipitationMm)
+
+            val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setSubText("${record.intervalLabel} • Temp $tempStr • Precip $precipRateStr")
+                .setContentTitle(record.title)
+                .setContentText("Tap to open Lanka Weather Guard • ${record.currentWeatherSummary}")
+                .setStyle(
+                    NotificationCompat.BigTextStyle()
+                        .setBigContentTitle(record.title)
+                        .bigText(record.body)
+                        .setSummaryText("Tap notification to open app • Gov Ref: ${record.govReferenceCode}")
+                )
+                .addAction(
+                    android.R.drawable.ic_menu_compass,
+                    "Open App",
+                    pendingIntent
+                )
+                .addAction(
+                    android.R.drawable.ic_menu_view,
+                    "Official Gov News",
+                    govPendingIntent
+                )
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+
+            notificationSequence = (notificationSequence + 1) % 9000 + 1000
+            NotificationManagerCompat.from(context)
+                .notify(notificationSequence, notification)
+            true
+        } catch (_: SecurityException) {
+            false
+        } catch (_: Exception) {
+            false
+        }
     }
 }

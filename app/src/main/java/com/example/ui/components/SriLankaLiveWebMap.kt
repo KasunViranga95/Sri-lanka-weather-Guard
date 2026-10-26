@@ -118,6 +118,8 @@ fun SriLankaLiveWebMap(
     stations: List<RiverGaugeStation>,
     regionalReport: RegionalWeatherReport,
     overlayMetric: LiveMapOverlayMetric,
+    selectedStation: RiverGaugeStation? = null,
+    onStationSelected: (RiverGaugeStation) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var zoomLevel by remember { mutableFloatStateOf(1.0f) }
@@ -125,7 +127,9 @@ fun SriLankaLiveWebMap(
     var inspectedCityNode by remember(selectedRegion.id, nearestCity) {
         mutableStateOf<MapWeatherNode?>(null)
     }
-    var inspectedGauge by remember { mutableStateOf<RiverGaugeStation?>(null) }
+    var inspectedGauge by remember(selectedStation?.id) {
+        mutableStateOf<RiverGaugeStation?>(selectedStation)
+    }
 
     val infiniteTransition = rememberInfiniteTransition(label = "live_weather_show")
     val particlePhase by infiniteTransition.animateFloat(
@@ -323,7 +327,7 @@ fun SriLankaLiveWebMap(
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(cityNodes, stations, zoomLevel, panOffset) {
+                    .pointerInput(cityNodes, zoomLevel, panOffset) {
                         detectTapGestures { tap ->
                             val w = size.width.toFloat()
                             val h = size.height.toFloat()
@@ -335,13 +339,6 @@ fun SriLankaLiveWebMap(
                             fun toScreenY(ny: Float): Float =
                                 (ny - 0.5f) * h * zoomLevel + h * 0.5f + panOffset.y
 
-                            val tappedStation = stations.minByOrNull { st ->
-                                hypot(tap.x - toScreenX(st.mapXFraction), tap.y - toScreenY(st.mapYFraction))
-                            }
-                            val stationDist = tappedStation?.let {
-                                hypot(tap.x - toScreenX(it.mapXFraction), tap.y - toScreenY(it.mapYFraction))
-                            } ?: Float.MAX_VALUE
-
                             val tappedCity = cityNodes.minByOrNull { node ->
                                 hypot(tap.x - toScreenX(node.mapX), tap.y - toScreenY(node.mapY))
                             }
@@ -349,13 +346,8 @@ fun SriLankaLiveWebMap(
                                 hypot(tap.x - toScreenX(it.mapX), tap.y - toScreenY(it.mapY))
                             } ?: Float.MAX_VALUE
 
-                            if (overlayMetric == LiveMapOverlayMetric.RIVER_GAUGES && stationDist < 65f) {
-                                inspectedGauge = tappedStation
-                            } else if (cityDist < 75f && tappedCity != null) {
+                            if (cityDist < 85f && tappedCity != null) {
                                 inspectedCityNode = tappedCity
-                                inspectedGauge = null
-                            } else if (stationDist < 60f) {
-                                inspectedGauge = tappedStation
                             }
                         }
                     }
@@ -577,31 +569,6 @@ fun SriLankaLiveWebMap(
                     )
                 }
 
-                // River Gauge Pins
-                stations.forEach { st ->
-                    val gx = sx(st.mapXFraction)
-                    val gy = sy(st.mapYFraction)
-                    val stColor = st.floodStatus.color
-                    val isInspected = inspectedGauge?.id == st.id
-                    if (st.floodStatus.severityRank >= 3 || isInspected || overlayMetric == LiveMapOverlayMetric.RIVER_GAUGES) {
-                        drawCircle(
-                            color = stColor.copy(alpha = 0.32f),
-                            radius = (if (isInspected) 18f else 11f) * beaconPulse,
-                            center = Offset(gx, gy)
-                        )
-                    }
-                    drawCircle(
-                        color = NavyAbyss,
-                        radius = if (overlayMetric == LiveMapOverlayMetric.RIVER_GAUGES) 7.5f else 5.5f,
-                        center = Offset(gx, gy)
-                    )
-                    drawCircle(
-                        color = stColor,
-                        radius = if (overlayMetric == LiveMapOverlayMetric.RIVER_GAUGES) 5.8f else 4.0f,
-                        center = Offset(gx, gy)
-                    )
-                }
-
                 // All Sri Lankan City Location Names & Metric Pills (with safe range clamping)
                 val labelPaint = Paint().apply {
                     isAntiAlias = true
@@ -647,7 +614,7 @@ fun SriLankaLiveWebMap(
                         LiveMapOverlayMetric.RIVER_GAUGES ->
                             "${node.tempC.roundToInt()}°C • ${node.rain24hMm.roundToInt()}mm"
                         LiveMapOverlayMetric.RADAR_PRECIP ->
-                            "${node.tempC.roundToInt()}°C • ${node.dbzEstimate}dBZ (${nodeDbzMeaning.shortTitle})"
+                            "${node.tempC.roundToInt()}°C • ${node.dbzEstimate} dBZ"
                     }
 
                     val pillTitle = node.name
@@ -684,7 +651,6 @@ fun SriLankaLiveWebMap(
         }
 
         // 3. Bottom Interactive Selected Location Live Telemetry Bar (dBZ value followed by its meaning)
-        val gauge = inspectedGauge
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -692,31 +658,17 @@ fun SriLankaLiveWebMap(
                 .padding(horizontal = 12.dp, vertical = 9.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            if (gauge != null) {
-                Text(
-                    text = "🌊 ${gauge.stationName} (${gauge.riverName} • ${gauge.basinCode})",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = gauge.floodStatus.color,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Level: ${String.format(Locale.US, "%.2f m", gauge.currentLevelM)} (${gauge.floodStatus.shortLabel}) • Rain: ${gauge.catchmentRainMm24h.roundToInt()} mm • Flow: ${gauge.dischargeM3s.roundToInt()} m³/s",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White
-                )
-            } else {
-                Text(
-                    text = "📍 ${activeNode.name} (${activeNode.district}) • ${activeNode.dbzEstimate} dBZ — ${activeDbzMeaning.shortTitle} (${activeDbzMeaning.rainRateMmPerHour})",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = activeDbzMeaning.badgeColor,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "🌡 Temp: ${String.format(Locale.US, "%.1f°C", activeNode.tempC)} • 🌧 Precip: ${String.format(Locale.US, "%.1f mm/h", activeNode.hourlyPrecipMm)} (${activeNode.rain24hMm.roundToInt()} mm/24h) • 💨 Wind: ${activeNode.windKmh} km/h",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White
-                )
-            }
+            Text(
+                text = "📍 ${activeNode.name} (${activeNode.district}) • ${activeNode.dbzEstimate} dBZ — ${activeDbzMeaning.shortTitle} (${activeDbzMeaning.rainRateMmPerHour})",
+                style = MaterialTheme.typography.labelMedium,
+                color = activeDbzMeaning.badgeColor,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "🌡 Temp: ${String.format(Locale.US, "%.1f°C", activeNode.tempC)} • 🌧 Precip: ${String.format(Locale.US, "%.1f mm/h", activeNode.hourlyPrecipMm)} (${activeNode.rain24hMm.roundToInt()} mm/24h) • 💨 Wind: ${activeNode.windKmh} km/h",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White
+            )
         }
     }
 }

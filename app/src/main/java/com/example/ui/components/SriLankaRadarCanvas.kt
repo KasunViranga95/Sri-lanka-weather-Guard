@@ -350,35 +350,7 @@ fun SriLankaRadarMapCanvas(
                 center = regPos
             )
 
-            // 8. River Gauge Station Pins
-            if (activeLayers.contains(RadarLayerType.RIVER_GAUGES)) {
-                stations.forEach { station ->
-                    val sx = station.mapXFraction * w
-                    val sy = station.mapYFraction * h
-                    val statusColor = station.floodStatus.color
-                    val isSelected = selectedStation?.id == station.id
-
-                    if (station.floodStatus.severityRank >= 3 || isSelected) {
-                        drawCircle(
-                            color = statusColor.copy(alpha = 0.35f),
-                            radius = (if (isSelected) 22f else 15f) * pulseFactor,
-                            center = Offset(sx, sy)
-                        )
-                    }
-                    drawCircle(
-                        color = NavyAbyss,
-                        radius = if (isSelected) 10.5f else 8f,
-                        center = Offset(sx, sy)
-                    )
-                    drawCircle(
-                        color = statusColor,
-                        radius = if (isSelected) 8f else 5.8f,
-                        center = Offset(sx, sy)
-                    )
-                }
-            }
-
-            // 9. Rotating Doppler Sweep Beam
+            // 8. Rotating Doppler Sweep Beam
             rotate(degrees = sweepAngle, pivot = radarCenter) {
                 val beamRad = Math.toRadians(0.0)
                 val beamEnd = Offset(

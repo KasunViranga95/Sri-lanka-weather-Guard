@@ -627,10 +627,9 @@ private fun buildLeaflet2dWeatherHtml(
     pressureHpa: Int
 ): String {
     val pinsJsonArray = pins.joinToString(prefix = "[", postfix = "]") { pin ->
-        val dbzInfo = getDbzMeaningForValue(pin.dbz)
         val metricLabel = when (layer) {
             ZoomEarthLayer.RADAR ->
-                "${pin.dbz}dBZ - ${dbzInfo.shortTitle}"
+                "${pin.dbz} dBZ • ${String.format(Locale.US, "%.1f", pin.rainMmH)}mm/h"
             ZoomEarthLayer.TEMPERATURE ->
                 "${String.format(Locale.US, "%.1f°C", pin.tempC)}"
             ZoomEarthLayer.WIND_SPEED ->
@@ -638,7 +637,7 @@ private fun buildLeaflet2dWeatherHtml(
             ZoomEarthLayer.PRESSURE ->
                 "$pressureHpa hPa • ${pin.tempC.roundToInt()}°C"
             else ->
-                "${pin.tempC.roundToInt()}°C • ${String.format(Locale.US, "%.1f", pin.rainMmH)}mm/h • ${pin.dbz}dBZ (${dbzInfo.shortTitle})"
+                "${pin.tempC.roundToInt()}°C • ${String.format(Locale.US, "%.1f", pin.rainMmH)}mm/h • ${pin.dbz} dBZ"
         }
         val hexColor = when {
             pin.dbz >= 52 -> "#FF3B5C"
@@ -1013,10 +1012,10 @@ private fun NativeMultiCityWeatherCanvas(
 
             val titleText = pin.name
             val subText = when (selectedLayer) {
-                ZoomEarthLayer.RADAR -> "${pin.dbz}dBZ (${dbzInfo.shortTitle})"
+                ZoomEarthLayer.RADAR -> "${pin.dbz} dBZ"
                 ZoomEarthLayer.TEMPERATURE -> "${pin.tempC.roundToInt()}°C"
                 ZoomEarthLayer.WIND_SPEED -> "${pin.windKmh}km/h"
-                else -> "${pin.tempC.roundToInt()}°C • ${pin.dbz}dBZ"
+                else -> "${pin.tempC.roundToInt()}°C • ${pin.dbz} dBZ"
             }
 
             val pillW = maxOf(namePaint.measureText(titleText), metricPaint.measureText(subText)) + 18f

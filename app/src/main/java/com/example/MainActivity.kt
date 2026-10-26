@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -47,6 +48,7 @@ import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Radar
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -69,11 +71,16 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.UserPreferencesStore
 import com.example.model.AlertSeverity
 import com.example.model.AppTab
+import com.example.model.DispatchedNotificationRecord
 import com.example.model.FloodStatus
 import com.example.ui.components.GeminiClarificationDialog
 import com.example.ui.components.ResidingLocationDialog
@@ -99,32 +106,52 @@ import com.example.viewmodel.WeatherViewModel
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
+    private var latestNotificationIntent by mutableStateOf<Intent?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        UserPreferencesStore.init(applicationContext)
         WeatherNotificationHelper.createNotificationChannel(this)
+        latestNotificationIntent = intent
         enableEdgeToEdge()
         setContent {
-            LankaWeatherGuardApp()
+            LankaWeatherGuardApp(
+                notificationIntent = latestNotificationIntent,
+                onNotificationIntentConsumed = { latestNotificationIntent = null }
+            )
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        latestNotificationIntent = intent
     }
 }
 
 @Composable
 fun LankaWeatherGuardApp(
-    weatherViewModel: WeatherViewModel = viewModel()
+    weatherViewModel: WeatherViewModel = viewModel(),
+    notificationIntent: Intent? = null,
+    onNotificationIntentConsumed: () -> Unit = {}
 ) {
     val uiState by weatherViewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    var pendingNotificationRecord by remember { mutableStateOf<DispatchedNotificationRecord?>(null) }
 
     LankaWeatherGuardTheme(darkTheme = uiState.isDarkTheme) {
-        // Notification Permission Launcher (Android 13+)
         val notificationPermissionLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestPermission()
         ) { _ ->
-            weatherViewModel.triggerNotificationForCurrentArea(context)
+            val pending = pendingNotificationRecord
+            if (pending != null) {
+                weatherViewModel.selectAndPostGeneratedNotification(context, pending)
+                pendingNotificationRecord = null
+            } else {
+                weatherViewModel.triggerNotificationForCurrentArea(context)
+            }
         }
 
-        // Location Permission Launcher: if denied or GPS unavailable, opens the Search & Select District/Nearest City Dialog
         val locationPermissionLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
@@ -145,8 +172,9 @@ fun LankaWeatherGuardApp(
             }
         }
 
-        // Generate initial residing area notification and start interval schedule on launch
         LaunchedEffect(Unit) {
+            UserPreferencesStore.init(context.applicationContext)
+            weatherViewModel.syncSavedPreferencesIfNeeded()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 ContextCompat.checkSelfPermission(
                     context,
@@ -156,6 +184,28 @@ fun LankaWeatherGuardApp(
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
             weatherViewModel.triggerNotificationForCurrentArea(context)
+        }
+
+        LaunchedEffect(notificationIntent) {
+            val activeIntent = notificationIntent ?: return@LaunchedEffect
+            val fromNotification = activeIntent.getBooleanExtra(
+                WeatherNotificationHelper.EXTRA_FROM_NOTIFICATION,
+                false
+            )
+            if (fromNotification) {
+                val regionId = activeIntent.getStringExtra(
+                    WeatherNotificationHelper.EXTRA_NOTIFICATION_REGION_ID
+                )
+                val city = activeIntent.getStringExtra(
+                    WeatherNotificationHelper.EXTRA_NOTIFICATION_CITY
+                )
+                weatherViewModel.handleNotificationClicked(
+                    context = context,
+                    regionId = regionId,
+                    nearestCity = city
+                )
+                onNotificationIntentConsumed()
+            }
         }
 
         val requestLocationAction = {
@@ -201,7 +251,20 @@ fun LankaWeatherGuardApp(
             }
         }
 
-        // Residing Area Search & Select Dialog (District + Nearest City + Notification Interval)
+        val selectGeneratedNotificationAction: (DispatchedNotificationRecord) -> Unit = { record ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                pendingNotificationRecord = record
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                weatherViewModel.selectAndPostGeneratedNotification(context, record)
+            }
+        }
+
         if (uiState.showResidingLocationDialog) {
             ResidingLocationDialog(
                 regions = uiState.regions,
@@ -222,7 +285,6 @@ fun LankaWeatherGuardApp(
             )
         }
 
-        // Gemini Weather & Metric Clarifier Dialog
         if (uiState.showGeminiClarifierDialog) {
             val currentPeakDbz = uiState.radarFrames.getOrElse(uiState.currentRadarFrameIndex) {
                 uiState.radarFrames.firstOrNull()
@@ -244,7 +306,6 @@ fun LankaWeatherGuardApp(
             )
         }
 
-        // BackHandler on secondary tabs returns to the primary Alerts screen
         if (uiState.currentTab != AppTab.ALERTS) {
             BackHandler {
                 weatherViewModel.selectTab(AppTab.ALERTS)
@@ -265,158 +326,182 @@ fun LankaWeatherGuardApp(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(AdaptiveSurfaceColor)
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                        .statusBarsPadding()
                 ) {
+                    // Row 1: Clean App Title + Ask Gemini Button (with statusBarsPadding so it never overlaps the clock/status bar)
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = stringResource(R.string.header_title),
-                                style = MaterialTheme.typography.titleMedium,
-                                color = AdaptivePrimaryText,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = stringResource(R.string.header_subtitle),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = AdaptiveCyanAccent,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        Text(
+                            text = stringResource(R.string.header_title),
+                            style = MaterialTheme.typography.titleLarge,
+                            color = AdaptiveCyanAccent,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                        )
 
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        Surface(
+                            color = AdaptiveElevatedColor,
+                            shape = RoundedCornerShape(18.dp),
+                            modifier = Modifier
+                                .border(1.dp, AdaptiveBorderColor, RoundedCornerShape(18.dp))
+                                .clickable { weatherViewModel.openGeminiClarifier() }
+                                .testTag("top_bar_ask_gemini_button")
                         ) {
-                            // Light / Dark Mode Theme Toggle Button
-                            Surface(
-                                color = AdaptiveElevatedColor,
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .border(1.dp, AdaptiveBorderColor, RoundedCornerShape(12.dp))
-                                    .clickable { weatherViewModel.toggleDarkTheme() }
-                                    .testTag("theme_mode_toggle_button")
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = "Ask Gemini",
+                                    tint = AdaptiveCyanAccent,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = "Ask Gemini",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = AdaptivePrimaryText,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+
+                    // Row 2: Location Chip + Explicit [Light | Dark] Mode Buttons (Single clean bar, no duplicate top tab menu)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 14.dp, end = 14.dp, bottom = 10.dp)
+                            .testTag("top_bar_live_temp_precip_strip"),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            color = AdaptiveElevatedColor,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                                .border(1.dp, AdaptiveBorderColor, RoundedCornerShape(10.dp))
+                                .clickable {
+                                    weatherViewModel.openResidingLocationDialog(permissionDenied = false)
+                                }
+                                .testTag("top_bar_residing_area_chip")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(SafeEmerald)
+                                    )
+                                    Text(
+                                        text = "${uiState.selectedNearestCity} • ${
+                                            String.format(Locale.US, "%.1f°C", uiState.regionalReport.currentTempC)
+                                        }",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = AdaptivePrimaryText,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.Default.EditLocationAlt,
+                                    contentDescription = "Change Location",
+                                    tint = AdaptiveCyanAccent,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
+                        }
+
+                        // Side-by-Side Light & Dark Mode Buttons
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(AdaptiveElevatedColor)
+                                .border(1.dp, AdaptiveBorderColor, RoundedCornerShape(10.dp))
+                                .padding(2.dp)
+                                .testTag("theme_mode_toggle_button"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Surface(
+                                color = if (!uiState.isDarkTheme) RadarCyan else Color.Transparent,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .clickable { weatherViewModel.setDarkTheme(false) }
+                                    .testTag("top_light_mode_button")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Icon(
-                                        imageVector = if (uiState.isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
-                                        contentDescription = if (uiState.isDarkTheme) "Switch to Light Mode" else "Switch to Dark Mode",
-                                        tint = if (uiState.isDarkTheme) WarningAmber else AdaptiveCyanAccent,
-                                        modifier = Modifier.size(15.dp)
+                                        imageVector = Icons.Default.LightMode,
+                                        contentDescription = "Light Mode",
+                                        tint = if (!uiState.isDarkTheme) Color.White else WarningAmber,
+                                        modifier = Modifier.size(14.dp)
                                     )
                                     Text(
-                                        text = if (uiState.isDarkTheme) "Light" else "Dark",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = AdaptivePrimaryText,
+                                        text = "Light",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (!uiState.isDarkTheme) Color.White else AdaptivePrimaryText,
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
                             }
 
-                            // Active Residing City & Interval Chip in Top Bar
                             Surface(
-                                color = RadarCyan.copy(alpha = 0.16f),
-                                shape = RoundedCornerShape(12.dp),
+                                color = if (uiState.isDarkTheme) RadarCyan else Color.Transparent,
+                                shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier
-                                    .clickable {
-                                        weatherViewModel.openResidingLocationDialog(permissionDenied = false)
-                                    }
-                                    .testTag("top_bar_residing_area_chip")
+                                    .clickable { weatherViewModel.setDarkTheme(true) }
+                                    .testTag("top_dark_mode_button")
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .clip(CircleShape)
-                                            .background(SafeEmerald)
+                                    Icon(
+                                        imageVector = Icons.Default.DarkMode,
+                                        contentDescription = "Dark Mode",
+                                        tint = if (uiState.isDarkTheme) Color.White else AdaptiveCyanAccent,
+                                        modifier = Modifier.size(14.dp)
                                     )
                                     Text(
-                                        text = "${uiState.selectedNearestCity} • ${uiState.selectedNotificationInterval.shortChipLabel}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = AdaptivePrimaryText,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1
-                                    )
-                                    Icon(
-                                        imageVector = Icons.Default.EditLocationAlt,
-                                        contentDescription = "Change Residing Area & Interval",
-                                        tint = AdaptiveCyanAccent,
-                                        modifier = Modifier.size(14.dp)
+                                        text = "Dark",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (uiState.isDarkTheme) Color.White else AdaptivePrimaryText,
+                                        fontWeight = FontWeight.Bold
                                     )
                                 }
                             }
                         }
                     }
 
-                    // Persistent Live Temperature, Precipitation & Gemini Metric Clarifier Bar across all tabs
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(AdaptiveElevatedColor)
-                            .border(1.dp, AdaptiveBorderColor, RoundedCornerShape(10.dp))
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                            .testTag("top_bar_live_temp_precip_strip"),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "🌡 ${
-                                String.format(Locale.US, "%.1f°C", uiState.regionalReport.currentTempC)
-                            } • 🌧 ${
-                                String.format(Locale.US, "%.1f mm/h", uiState.regionalReport.precipitationMm)
-                            } (${uiState.regionalReport.rain24hMm.toInt()}mm/24h)",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = SafeEmerald,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-
-                        Surface(
-                            color = RadarCyan.copy(alpha = 0.18f),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier
-                                .border(1.dp, RadarCyan.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
-                                .clickable { weatherViewModel.openGeminiClarifier() }
-                                .testTag("top_bar_ask_gemini_button")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.AutoAwesome,
-                                    contentDescription = "Ask Gemini to Clarify Metrics",
-                                    tint = AdaptiveCyanAccent,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Text(
-                                    text = "Ask Gemini",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = AdaptiveCyanAccent,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
+                    HorizontalDivider(color = AdaptiveBorderColor)
 
                     if (uiState.isLoading) {
                         LinearProgressIndicator(
@@ -430,7 +515,7 @@ fun LankaWeatherGuardApp(
             bottomBar = {
                 NavigationBar(
                     containerColor = AdaptiveSurfaceColor,
-                    tonalElevation = 8.dp
+                    tonalElevation = 4.dp
                 ) {
                     AppTab.entries.forEach { tab ->
                         val selected = uiState.currentTab == tab
@@ -472,7 +557,7 @@ fun LankaWeatherGuardApp(
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = AdaptiveCyanAccent,
                                 selectedTextColor = AdaptiveCyanAccent,
-                                indicatorColor = RadarCyan.copy(alpha = 0.16f),
+                                indicatorColor = RadarCyan.copy(alpha = 0.14f),
                                 unselectedIconColor = AdaptiveSecondaryText,
                                 unselectedTextColor = AdaptiveSecondaryText
                             ),
@@ -495,6 +580,7 @@ fun LankaWeatherGuardApp(
                         selectedNotificationInterval = uiState.selectedNotificationInterval,
                         gpsStatusMessage = uiState.gpsStatusMessage,
                         latestNotification = uiState.latestNotification,
+                        notificationHistory = uiState.notificationHistory,
                         residingGovAnnouncement = uiState.governmentAnnouncements.firstOrNull(),
                         alerts = uiState.alerts,
                         selectedSeverityFilter = uiState.selectedAlertSeverityFilter,
@@ -516,6 +602,7 @@ fun LankaWeatherGuardApp(
                             weatherViewModel.openResidingLocationDialog(permissionDenied = false)
                         },
                         onSendAreaNotificationNow = sendNotificationForCurrentAreaAction,
+                        onSelectGeneratedNotification = selectGeneratedNotificationAction,
                         onRefreshTelemetry = { weatherViewModel.refreshAllTelemetry() },
                         onSeverityFilterSelected = { weatherViewModel.setAlertSeverityFilter(it) },
                         onOpenRadarTab = { weatherViewModel.selectTab(AppTab.RADAR) },
@@ -534,6 +621,7 @@ fun LankaWeatherGuardApp(
                         isRadarPlaying = uiState.isRadarPlaying,
                         activeLayers = uiState.activeRadarLayers,
                         stations = uiState.riverStations,
+                        regions = uiState.regions,
                         selectedRegion = uiState.selectedRegion,
                         selectedNearestCity = uiState.selectedNearestCity,
                         regionalReport = uiState.regionalReport,
@@ -545,6 +633,14 @@ fun LankaWeatherGuardApp(
                         onFrameIndexChanged = { weatherViewModel.setRadarFrameIndex(it) },
                         onToggleLayer = { weatherViewModel.toggleRadarLayer(it) },
                         onStationSelected = { weatherViewModel.selectStationDetail(it) },
+                        onSelectRegionAndCity = { region, city ->
+                            weatherViewModel.confirmResidingLocationAndNotify(
+                                context = context,
+                                region = region,
+                                nearestCity = city,
+                                fromGps = false
+                            )
+                        },
                         onOpenExternalUrl = { url -> openExternalGovernmentUrl(context, url) },
                         onOpenGeminiClarifier = { prompt -> weatherViewModel.openGeminiClarifier(prompt) }
                     )

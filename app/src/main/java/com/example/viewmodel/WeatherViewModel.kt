@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.GovernmentAnnouncementsProvider
 import com.example.data.SriLankaWeatherRepository
+import com.example.data.UserPreferencesStore
 import com.example.model.AlertSeverity
 import com.example.model.AppTab
 import com.example.model.DispatchedNotificationRecord
@@ -45,7 +46,7 @@ data class WeatherUiState(
     val isGpsDetected: Boolean = false,
     val showResidingLocationDialog: Boolean = false,
     val wasLocationPermissionDenied: Boolean = false,
-    val gpsStatusMessage: String = "Residing Area: Wellampitiya, Colombo • Auto-Alert Every 15 min",
+    val gpsStatusMessage: String = "Saved Area: Wellampitiya, Colombo • Auto-Alert Every 15 min",
     val latestNotification: DispatchedNotificationRecord? = null,
     val notificationHistory: List<DispatchedNotificationRecord> = emptyList(),
     val isLoading: Boolean = false,
@@ -65,7 +66,6 @@ data class WeatherUiState(
     val liveMapOverlayMetric: LiveMapOverlayMetric = LiveMapOverlayMetric.RADAR_PRECIP,
     val activeRadarLayers: Set<RadarLayerType> = setOf(
         RadarLayerType.PRECIPITATION_DBZ,
-        RadarLayerType.RIVER_GAUGES,
         RadarLayerType.WIND_VECTORS
     ),
     val governmentAnnouncements: List<GovernmentAnnouncement> = emptyList(),
@@ -81,8 +81,21 @@ class WeatherViewModel(
     private val repository: SriLankaWeatherRepository = SriLankaWeatherRepository()
 ) : ViewModel() {
 
-    private val initialRegion = repository.regions.first()
-    private val initialCity = initialRegion.nearestCities.getOrElse(1) { initialRegion.name }
+    private val savedPrefs = UserPreferencesStore.loadPreferences()
+
+    private val initialRegion: SriLankaRegion = repository.regions.firstOrNull {
+        it.id.equals(savedPrefs.regionId, ignoreCase = true) ||
+            it.name.equals(savedPrefs.regionId, ignoreCase = true)
+    } ?: repository.regions.first()
+
+    private val initialCity: String = savedPrefs.nearestCity?.takeIf { city ->
+        city.isNotBlank() && initialRegion.nearestCities.any { it.equals(city, ignoreCase = true) }
+    } ?: initialRegion.nearestCities.getOrElse(1) { initialRegion.name }
+
+    private val initialInterval: NotificationIntervalOption =
+        NotificationIntervalOption.entries.firstOrNull { it.id == savedPrefs.intervalId }
+            ?: NotificationIntervalOption.MIN_15
+
     private val initialFrames = repository.getRadarFrames()
     private val initialStations = kotlinx.coroutines.runBlocking {
         repository.fetchLiveRiverStations(initialRegion)
@@ -98,9 +111,13 @@ class WeatherViewModel(
 
     private val _uiState = MutableStateFlow(
         WeatherUiState(
+            isDarkTheme = savedPrefs.isDarkTheme,
             regions = repository.regions,
             selectedRegion = initialRegion,
             selectedNearestCity = initialCity,
+            selectedNotificationInterval = initialInterval,
+            isGpsDetected = savedPrefs.isFromGps,
+            gpsStatusMessage = "Saved Area: $initialCity, ${initialRegion.name} • Auto-Alert ${initialInterval.label}",
             alerts = repository.getAlertsForRegion(
                 selectedRegion = initialRegion,
                 nearestCity = initialCity,
@@ -131,12 +148,57 @@ class WeatherViewModel(
         startRadarAnimationLoop()
     }
 
+    /**
+     * Synchronizes the ViewModel with SharedPreferences if UserPreferencesStore was initialized
+     * after ViewModel construction.
+     */
+    fun syncSavedPreferencesIfNeeded() {
+        val prefs = UserPreferencesStore.loadPreferences()
+        val savedRegion = prefs.regionId?.let { id ->
+            repository.regions.firstOrNull {
+                it.id.equals(id, ignoreCase = true) || it.name.equals(id, ignoreCase = true)
+            }
+        }
+        if (savedRegion != null) {
+            val savedCity = prefs.nearestCity?.takeIf { it.isNotBlank() }
+                ?: savedRegion.nearestCities.firstOrNull()
+                ?: savedRegion.name
+            val savedInterval = NotificationIntervalOption.entries.firstOrNull { it.id == prefs.intervalId }
+                ?: _uiState.value.selectedNotificationInterval
+            val current = _uiState.value
+            if (current.selectedRegion.id != savedRegion.id ||
+                !current.selectedNearestCity.equals(savedCity, ignoreCase = true) ||
+                current.selectedNotificationInterval != savedInterval ||
+                current.isDarkTheme != prefs.isDarkTheme
+            ) {
+                _uiState.update {
+                    it.copy(
+                        selectedRegion = savedRegion,
+                        selectedNearestCity = savedCity,
+                        selectedNotificationInterval = savedInterval,
+                        isGpsDetected = prefs.isFromGps,
+                        isDarkTheme = prefs.isDarkTheme,
+                        gpsStatusMessage = "Saved Area: $savedCity, ${savedRegion.name} • Auto-Alert ${savedInterval.label}"
+                    )
+                }
+                refreshAllTelemetry(savedRegion, savedCity)
+            }
+        }
+    }
+
     fun selectTab(tab: AppTab) {
         _uiState.update { it.copy(currentTab = tab) }
     }
 
     fun toggleDarkTheme() {
-        _uiState.update { it.copy(isDarkTheme = !it.isDarkTheme) }
+        val nextDark = !_uiState.value.isDarkTheme
+        UserPreferencesStore.saveDarkTheme(nextDark)
+        _uiState.update { it.copy(isDarkTheme = nextDark) }
+    }
+
+    fun setDarkTheme(dark: Boolean) {
+        UserPreferencesStore.saveDarkTheme(dark)
+        _uiState.update { it.copy(isDarkTheme = dark) }
     }
 
     fun openResidingLocationDialog(permissionDenied: Boolean = false) {
@@ -156,10 +218,11 @@ class WeatherViewModel(
         context: Context,
         intervalOption: NotificationIntervalOption
     ) {
+        UserPreferencesStore.saveNotificationInterval(intervalOption)
         _uiState.update { state ->
             state.copy(
                 selectedNotificationInterval = intervalOption,
-                gpsStatusMessage = "Residing Area: ${state.selectedNearestCity}, ${state.selectedRegion.name} • Auto-Alert ${intervalOption.label}"
+                gpsStatusMessage = "Saved Area: ${state.selectedNearestCity}, ${state.selectedRegion.name} • Auto-Alert ${intervalOption.label}"
             )
         }
         triggerNotificationForCurrentArea(context, intervalOption)
@@ -178,6 +241,12 @@ class WeatherViewModel(
         nearestCity: String = region.nearestCities.firstOrNull() ?: region.name,
         fromGps: Boolean = false
     ) {
+        UserPreferencesStore.saveLocation(
+            region = region,
+            nearestCity = nearestCity,
+            isFromGps = fromGps,
+            intervalOption = _uiState.value.selectedNotificationInterval
+        )
         _uiState.update {
             it.copy(
                 selectedRegion = region,
@@ -185,9 +254,9 @@ class WeatherViewModel(
                 isGpsDetected = fromGps,
                 showResidingLocationDialog = false,
                 gpsStatusMessage = if (fromGps) {
-                    "GPS Area: $nearestCity, ${region.name} • Auto-Alert ${it.selectedNotificationInterval.label}"
+                    "GPS Saved: $nearestCity, ${region.name} • Auto-Alert ${it.selectedNotificationInterval.label}"
                 } else {
-                    "Residing Area: $nearestCity, ${region.name} • Auto-Alert ${it.selectedNotificationInterval.label}"
+                    "Saved Area: $nearestCity, ${region.name} • Auto-Alert ${it.selectedNotificationInterval.label}"
                 }
             )
         }
@@ -202,6 +271,12 @@ class WeatherViewModel(
         intervalOption: NotificationIntervalOption = _uiState.value.selectedNotificationInterval
     ) {
         val appContext = context.applicationContext
+        UserPreferencesStore.saveLocation(
+            region = region,
+            nearestCity = nearestCity,
+            isFromGps = fromGps,
+            intervalOption = intervalOption
+        )
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
@@ -212,9 +287,9 @@ class WeatherViewModel(
                     showResidingLocationDialog = false,
                     isLoading = true,
                     gpsStatusMessage = if (fromGps) {
-                        "GPS Locked: $nearestCity, ${region.name} • Auto-Alert ${intervalOption.label}"
+                        "GPS Saved: $nearestCity, ${region.name} • Auto-Alert ${intervalOption.label}"
                     } else {
-                        "Residing Area: $nearestCity, ${region.name} • Auto-Alert ${intervalOption.label}"
+                        "Saved Area: $nearestCity, ${region.name} • Auto-Alert ${intervalOption.label}"
                     }
                 )
             }
@@ -249,12 +324,78 @@ class WeatherViewModel(
                     alerts = alerts,
                     governmentAnnouncements = govAnnouncements,
                     latestNotification = notificationRecord,
-                    notificationHistory = (listOf(notificationRecord) + state.notificationHistory).take(8)
+                    notificationHistory = (listOf(notificationRecord) + state.notificationHistory)
+                        .distinctBy { it.id }
+                        .take(8)
                 )
             }
 
             restartPeriodicNotificationJob(appContext, intervalOption)
         }
+    }
+
+    /**
+     * Called when the user selects a generated notification in the app: updates latestNotification
+     * and immediately dispatches/shows it in the Android device's notification shade.
+     */
+    fun selectAndPostGeneratedNotification(
+        context: Context,
+        record: DispatchedNotificationRecord
+    ) {
+        val matchedRegion = repository.regions.firstOrNull {
+            it.name.equals(record.district, ignoreCase = true)
+        } ?: _uiState.value.selectedRegion
+
+        _uiState.update { state ->
+            state.copy(latestNotification = record)
+        }
+
+        WeatherNotificationHelper.postRecordToDeviceNotifications(
+            context = context.applicationContext,
+            record = record,
+            regionId = matchedRegion.id
+        )
+    }
+
+    /**
+     * Called when the user clicks a notification in the Android system notification shade:
+     * navigates to the Alerts tab and restores/saves the notification's location.
+     */
+    fun handleNotificationClicked(
+        context: Context,
+        regionId: String?,
+        nearestCity: String?
+    ) {
+        val targetRegion = regionId?.let { id ->
+            repository.regions.firstOrNull {
+                it.id.equals(id, ignoreCase = true) || it.name.equals(id, ignoreCase = true)
+            }
+        } ?: _uiState.value.selectedRegion
+
+        val targetCity = nearestCity?.takeIf { it.isNotBlank() }
+            ?: if (targetRegion.id == _uiState.value.selectedRegion.id) {
+                _uiState.value.selectedNearestCity
+            } else {
+                targetRegion.nearestCities.firstOrNull() ?: targetRegion.name
+            }
+
+        UserPreferencesStore.saveLocation(
+            region = targetRegion,
+            nearestCity = targetCity,
+            isFromGps = _uiState.value.isGpsDetected,
+            intervalOption = _uiState.value.selectedNotificationInterval
+        )
+
+        _uiState.update { state ->
+            state.copy(
+                currentTab = AppTab.ALERTS,
+                selectedRegion = targetRegion,
+                selectedNearestCity = targetCity,
+                showResidingLocationDialog = false,
+                gpsStatusMessage = "Saved Area: $targetCity, ${targetRegion.name} • Auto-Alert ${state.selectedNotificationInterval.label}"
+            )
+        }
+        refreshAllTelemetry(targetRegion, targetCity)
     }
 
     fun onCoordinatesDetectedAndNotify(context: Context, latitude: Double, longitude: Double) {
@@ -322,7 +463,9 @@ class WeatherViewModel(
                         riverStations = stations,
                         governmentAnnouncements = govAnnouncements,
                         latestNotification = record,
-                        notificationHistory = (listOf(record) + current.notificationHistory).take(8)
+                        notificationHistory = (listOf(record) + current.notificationHistory)
+                            .distinctBy { it.id }
+                            .take(8)
                     )
                 }
             }
@@ -370,7 +513,24 @@ class WeatherViewModel(
     }
 
     fun setRiverSearchQuery(query: String) {
-        _uiState.update { it.copy(riverSearchQuery = query) }
+        _uiState.update { state ->
+            val trimmed = query.trim()
+            val shouldResetBasin = trimmed.isNotEmpty() &&
+                state.selectedBasinFilter != "All Basins" &&
+                state.riverStations.none { st ->
+                    st.riverName.contains(state.selectedBasinFilter, ignoreCase = true) &&
+                        (st.stationName.contains(trimmed, ignoreCase = true) ||
+                            st.riverName.contains(trimmed, ignoreCase = true) ||
+                            st.basinCode.contains(trimmed, ignoreCase = true) ||
+                            st.district.contains(trimmed, ignoreCase = true) ||
+                            (st.tributaryOf?.contains(trimmed, ignoreCase = true) == true) ||
+                            st.downstreamTowns.any { town -> town.contains(trimmed, ignoreCase = true) })
+                }
+            state.copy(
+                riverSearchQuery = query,
+                selectedBasinFilter = if (shouldResetBasin) "All Basins" else state.selectedBasinFilter
+            )
+        }
     }
 
     fun selectStationDetail(station: RiverGaugeStation?) {

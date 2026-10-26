@@ -87,7 +87,9 @@ object GeminiClarificationClient {
         peakDbz: Int,
         primaryStation: RiverGaugeStation?
     ): String = withContext(Dispatchers.IO) {
-        val apiKey = BuildConfig.GEMINI_API_KEY
+        val apiKey = runCatching {
+            BuildConfig::class.java.getDeclaredField("GEMINI_API_KEY").get(null) as? String
+        }.getOrNull().orEmpty()
         val dbzMeaning = getDbzMeaningForValue(peakDbz)
 
         val systemContext = buildString {

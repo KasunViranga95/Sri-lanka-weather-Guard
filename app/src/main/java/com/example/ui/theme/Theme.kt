@@ -8,19 +8,19 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
-val LocalIsDarkTheme = staticCompositionLocalOf { true }
+val LocalIsDarkTheme = staticCompositionLocalOf { false }
 
 private val DarkWeatherColorScheme = darkColorScheme(
-    primary = Color(0xFF00E5FF),
-    onPrimary = Color(0xFF00262C),
+    primary = Color(0xFF4599FF),
+    onPrimary = Color.White,
     primaryContainer = NavyElevated,
     onPrimaryContainer = CloudWhite,
-    secondary = Color(0xFF1DE9B6),
+    secondary = Color(0xFF2ABBA7),
     onSecondary = Color(0xFF00281F),
-    secondaryContainer = Color(0xFF0E3338),
+    secondaryContainer = Color(0xFF1F3834),
     onSecondaryContainer = CloudWhite,
     tertiary = WarningAmber,
-    onTertiary = Color(0xFF2B1700),
+    onTertiary = Color.White,
     error = AlertRed,
     onError = Color.White,
     background = NavyAbyss,
@@ -33,17 +33,17 @@ private val DarkWeatherColorScheme = darkColorScheme(
 )
 
 private val LightWeatherColorScheme = lightColorScheme(
-    primary = Color(0xFF007799),
+    primary = Color(0xFF1877F2),
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFD6F3FA),
-    onPrimaryContainer = Color(0xFF002633),
+    primaryContainer = Color(0xFFE7F3FF),
+    onPrimaryContainer = Color(0xFF050505),
     secondary = Color(0xFF00796B),
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFD0F2EC),
+    secondaryContainer = Color(0xFFE0F2F1),
     onSecondaryContainer = Color(0xFF00251E),
     tertiary = Color(0xFFE65100),
     onTertiary = Color.White,
-    error = Color(0xFFD32F2F),
+    error = AlertRed,
     onError = Color.White,
     background = LightSkyBackground,
     onBackground = DeepInk,
@@ -56,7 +56,7 @@ private val LightWeatherColorScheme = lightColorScheme(
 
 @Composable
 fun LankaWeatherGuardTheme(
-    darkTheme: Boolean = true,
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = if (darkTheme) DarkWeatherColorScheme else LightWeatherColorScheme
